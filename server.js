@@ -7,8 +7,14 @@ const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Your frontend domain (Cloudflare Pages)
+// ✅ FIXED: Removed trailing space in origin
 const FRONTEND_ORIGIN = 'https://limeroolon.pages.dev';
+
+// ✅ Allow ngrok domains dynamically (since they change on every restart)
+// You can also hardcode your current ngrok URL if preferred
+const isNgrokOrigin = (origin) => {
+  return origin && origin.endsWith('.ngrok.io');
+};
 
 // Ensure logs directory exists
 const LOG_DIR = path.join(__dirname, 'logs');
@@ -16,13 +22,17 @@ if (!fs.existsSync(LOG_DIR)) {
   fs.mkdirSync(LOG_DIR, { recursive: true });
 }
 
-// CORS: Allow only your frontend + handle sendBeacon (which may send null origin)
+// ✅ Enhanced CORS: allow Cloudflare Pages, ngrok, and no-origin requests
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests from your site OR requests with no origin (common with sendBeacon)
-    if (!origin || origin === FRONTEND_ORIGIN) {
+    if (
+      !origin || // e.g., sendBeacon or same-origin
+      origin === FRONTEND_ORIGIN ||
+      isNgrokOrigin(origin)
+    ) {
       callback(null, true);
     } else {
+      console.warn(`[CORS] Blocked origin: ${origin}`);
       callback(new Error('Forbidden by CORS policy'));
     }
   }
@@ -36,28 +46,23 @@ app.post('/ping', (req, res) => {
   try {
     const data = req.body;
 
-    // Validate minimal payload
     if (!data || typeof data !== 'object' || !data.target) {
       console.warn('[LimeAI] ❌ Invalid payload received');
-      return res.status(400).end(); // sendBeacon prefers no body
+      return res.status(400).end();
     }
 
-    // Add server-side timestamp
     const logEntry = {
       receivedAt: new Date().toISOString(),
       ...data
     };
 
-    // Log to console (for debugging)
     console.log('\n[LimeAI] 📡 Telemetry received:');
     console.log(JSON.stringify(logEntry, null, 2));
 
-    // Save to daily JSONL log file (one JSON per line)
-    const dateStr = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+    const dateStr = new Date().toISOString().split('T')[0];
     const logPath = path.join(LOG_DIR, `telemetry-${dateStr}.jsonl`);
     fs.appendFileSync(logPath, JSON.stringify(logEntry) + '\n');
 
-    // Respond quickly with 200 OK (required for sendBeacon success)
     res.status(200).end();
   } catch (err) {
     console.error('[LimeAI] 🔥 Error processing ping:', err.message);
@@ -65,18 +70,21 @@ app.post('/ping', (req, res) => {
   }
 });
 
-// Health check endpoint
+// Health check
 app.get('/', (req, res) => {
   res.json({
     status: 'LimeAI Backend Active ✅',
     frontend: FRONTEND_ORIGIN,
-    ping: 'POST /ping'
+    ping: 'POST /ping',
+    logs: LOG_DIR
   });
 });
 
-// Start server
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n✅ LimeAI backend running on port ${PORT}`);
-  console.log(`🌐 Accepting pings from: ${FRONTEND_ORIGIN}`);
-  console.log(`📡 Endpoint: POST /ping\n`);
+  console.log(`🌐 Accepting pings from:`);
+  console.log(`   - ${FRONTEND_ORIGIN}`);
+  console.log(`   - *.ngrok.io (dynamic)`);
+  console.log(`📡 Endpoint: POST /ping`);
+  console.log(`📁 Logs: ${LOG_DIR}\n`);
 });
